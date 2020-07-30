@@ -1,0 +1,242 @@
+provider  "aws"  {
+    profile  =  "lcprofile"
+    region   =  "ap-south-1"
+ }
+
+  resource "aws_vpc" "t2_vpc" {
+    cidr_block           = "10.0.0.0/16"
+    enable_dns_support   = true
+    enable_dns_hostnames = true
+  tags= {
+     Name = "task2"
+    }
+ }
+
+  resource "aws_subnet" "t2_subnet" {
+     depends_on = [
+         aws_vpc.t2_vpc
+       ]
+     vpc_id            = aws_vpc.t2_vpc.id
+     availability_zone = "ap-south-1a"
+     cidr_block        = "10.0.1.0/24"
+     map_public_ip_on_launch = true
+  tags= {
+     Name = "task2"
+   }
+ }
+
+  resource "aws_internet_gateway" "t2_netg" {
+     depends_on = [
+        aws_vpc.t2_vpc
+      ]
+        vpc_id = aws_vpc.t2_vpc.id
+     tags = {
+       Name = "task2"
+   }
+ }
+
+  resource "aws_route_table" "t2_route" {
+    depends_on = [
+       aws_vpc.t2_vpc
+     ]
+     vpc_id = aws_vpc.t2_vpc.id
+      route {
+        cidr_block = "0.0.0.0/0"
+        gateway_id = aws_internet_gateway.t2_netg.id
+      }
+    tags = {
+    Name = "task2"
+   }
+ }
+
+  resource "aws_route_table_association" "t2_asso" {
+      depends_on = [
+        aws_subnet.t2_subnet
+      ]
+     subnet_id      = aws_subnet.t2_subnet.id
+     route_table_id = aws_route_table.t2_route.id
+  }
+
+  resource "aws_security_group" "t2_sg" {
+     name        = "t2_sg"
+     description = "Communication-efs"
+     vpc_id      = aws_vpc.t2_vpc.id
+  ingress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  tags = {
+    Name = "tf-task2-sg"
+   }
+ }
+
+  resource "aws_efs_file_system" "t2_efs" {
+     creation_token = "task2_efs_tf"
+   tags = {
+     Name = "task2"
+   }
+ }
+ 
+  resource "aws_efs_mount_target" "t2_mount" {
+    depends_on = [
+      aws_efs_file_system.t2_efs,
+      aws_subnet.t2_subnet,
+      aws_security_group.t2_sg
+    ]
+      file_system_id = aws_efs_file_system.t2_efs.id
+      subnet_id      = aws_subnet.t2_subnet.id
+     security_groups = [aws_security_group.t2_sg.id]
+
+ }
+
+  resource "aws_efs_access_point" "efs_access" {
+     depends_on = [
+       aws_efs_file_system.t2_efs,
+     ]
+       file_system_id = aws_efs_file_system.t2_efs.id
+ }
+
+  resource "aws_instance" "t2_inst" {
+      depends_on = [
+           aws_vpc.t2_vpc,
+           aws_subnet.t2_subnet,
+           aws_efs_file_system.t2_efs,
+        ]
+   ami           = "ami-08706cb5f68222d09"
+   instance_type = "t2.micro"
+   subnet_id      = aws_subnet.t2_subnet.id
+   security_groups = [ aws_security_group.t2_sg.id ]
+   key_name = "linreets1"
+ 
+   connection {
+     type     = "ssh"
+     user     = "ec2-user"
+     private_key = file("C:/Users/Vinny/Downloads/linreets1.pem")
+     host     = aws_instance.t2_inst.public_ip
+  }
+
+
+  provisioner "remote-exec" {
+        inline = [
+        "sudo su <<END",
+        "yum install git php httpd amazon-efs-utils -y",
+        "rm -rf /var/www/html/*",
+        "/usr/sbin/httpd",
+        "efs_id=${aws_efs_file_system.t2_efs.id}",
+        "mount -t efs $efs_id:/ /var/www/html",
+        "git clone https://github.com/reethuj/aws-efs-tf.git /var/www/html/",  
+        "END",
+    ]
+  }
+  tags = {
+    Name = "task2"
+   }
+ }
+
+  resource "aws_s3_bucket" "rjk_buc005" {
+    bucket = "task2bucket"
+    acl    = "public-read"
+    region = "ap-south-1"
+
+
+   tags = {
+     Name = "task2"
+   }
+ }
+ 
+  resource "aws_s3_bucket_object" "tf_s3_image" {
+
+      depends_on = [
+         aws_s3_bucket.rjk_buc005,
+       ]
+    bucket  = aws_s3_bucket.rjk_buc005.bucket
+    key     = "download.jpg"
+    source = "C:/Users/Vinny/Desktop/tera/img.jpg"
+    acl     = "public-read"
+ }
+  
+  variable "oid" {
+	type = string
+ 	default = "S3-"
+}
+
+
+locals {
+  s3_origin_id = "${var.oid}${aws_s3_bucket.rjk_buc005.id}"
+}
+
+
+  resource "aws_cloudfront_distribution" "t2_cd" {
+      depends_on = [
+          aws_s3_bucket_object.tf_s3_image,  
+  ] 
+  origin {
+    domain_name = "${aws_s3_bucket.rjk_buc005.bucket_regional_domain_name}"
+    origin_id   = "${local.s3_origin_id}"
+  }
+
+
+  enabled             = true
+   default_cache_behavior {
+    allowed_methods  = ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]
+    cached_methods   = ["GET", "HEAD"]
+    target_origin_id = "${local.s3_origin_id}"
+
+
+    forwarded_values {
+      query_string = false
+
+
+      cookies {
+        forward = "none"
+      }
+    }
+
+
+    viewer_protocol_policy = "allow-all"
+    min_ttl                = 0
+    default_ttl            = 3600
+    max_ttl                = 86400
+  }
+
+
+
+
+  restrictions {
+    geo_restriction {
+      restriction_type = "none"
+    }
+  }
+
+
+  viewer_certificate {
+    cloudfront_default_certificate = true
+  }
+
+
+  connection {
+    type     = "ssh"
+    user     = "ec2-user"
+    private_key = file("C:/Users/Vinny/Downloads/linreets1.pem")
+    host     = aws_instance.t2_inst.public_ip
+  }
+
+
+    provisioner "remote-exec" {
+       inline = [
+        "sudo su <<END",
+        "sudo echo \"<img src='http://${aws_cloudfront_distribution.t2_cd.domain_name}/${aws_s3_bucket_object.tf_s3_image.key}' height='200' width='200' >\"  >> /var/www/html/index.php",
+        "END",
+    ]
+   }
+ }
+ 
+ 
